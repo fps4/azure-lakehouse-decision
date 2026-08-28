@@ -1,0 +1,59 @@
+# Policy — the preferences, thresholds and appetites. Everything here is arguable
+# on purpose; nothing here is an estate fact.
+#
+# The ordering rule the whole engine obeys (ADR-0002): constraints eliminate,
+# economics chooses. Nothing in this file may turn a constraint into a weight.
+
+residency:
+  # A workload whose data may only come to rest in regions where the platform has
+  # no home cannot go there. Not cheaper, not slower — cannot.
+  enforce: true
+  # Restricted classification additionally requires the platform to be the one the
+  # estate has already cleared for it, rather than any technically-capable one.
+  restricted_requires_cleared_platform: true
+  cleared_platform_for_restricted: fabric
+
+tsql:
+  # A dedicated SQL pool workload whose surface is multi-table transactions or
+  # stored procedures does not lift onto a platform without them. It can be
+  # rewritten — and the cost model prices that — but the rule set treats "rewrite
+  # the finance warehouse" as an elimination rather than a line item, because a
+  # decision that lets a rewrite be bought with a spreadsheet is how estates end up
+  # half-migrated for three years.
+  eliminate_when_surface_unsupported: true
+  # Set to false to allow a rewrite instead, priced by the multiplier in the cost
+  # model. Flip it and re-run to see what the constraint is worth.
+
+streaming:
+  # A stream that must restate an event-time window when a late event arrives, or
+  # must guarantee exactly-once into its sink, needs an engine built for it. The
+  # append-only ingestion-time engine is not a cheaper version of that engine — it
+  # is a different answer to a different question.
+  eliminate_when_semantics_unsupported: true
+  # Sub-second interactive query over high-cardinality telemetry is the mirror
+  # constraint, pointing the other way.
+  subsecond_requires_capable_platform: true
+
+ml:
+  # Experiment tracking, a registry and a served endpoint. A judgement, not a fact —
+  # see the comment in platforms.yaml.
+  eliminate_when_lifecycle_unsupported: true
+
+semantics:
+  # Direct Lake is worth paying a bounded premium for: a Power BI semantic model
+  # that reads Delta in place has no import refresh window to fail and no
+  # DirectQuery round trip to blame. Above the ratio, it stops being worth it.
+  prefer_direct_lake_consumers: true
+  max_premium_ratio: 1.30
+
+capacity:
+  # Never plan a Fabric capacity above this share of its ceiling. Fabric smooths
+  # consumption and then throttles; a capacity planned at 100% is a capacity that
+  # throttles interactive users at month-end while the background jobs catch up.
+  headroom: 0.75
+  # Interactive workloads with a hard concurrency peak are the ones that feel a
+  # throttle first, so they get a stricter allowance.
+  interactive_headroom: 0.65
+  # Below this share of a paid-for capacity, the estate is buying capacity it does
+  # not use, and R8 pulls eligible workloads back onto Fabric to fill it.
+  consolidation_floor: 0.55

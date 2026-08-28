@@ -1,0 +1,104 @@
+# The cost model.
+#
+# ILLUSTRATIVE PLACEHOLDERS, shaped like list pricing. Not quotes, not a rate card,
+# not a client's contract. They live in one file precisely so they can be replaced
+# with real ones — and every report that prints a euro figure repeats that sentence
+# (ADR-0006).
+#
+# The durable content of this file is not the numbers. It is the *shape*:
+#
+#   Fabric      a pre-paid capacity. One bill for the whole estate. The marginal
+#               cost of one more workload is zero — until the capacity saturates,
+#               and then it is the price of the next F-SKU. A step function.
+#   Databricks  metered. Near-zero fixed cost, and a straight line in consumption.
+#
+# A step function against a straight line is a different argument from two straight
+# lines, and it is the reason a workload's platform depends on what else is on the
+# platform (ADR-0003).
+
+currency: EUR
+hours_per_month: 730.0
+
+fabric:
+  # F-SKU ladder. Capacity units are the currency Fabric bills in; every workload
+  # consumes CU-seconds from the one pool.
+  skus: [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+  eur_per_cu_hour: 0.20
+  # A one-year reservation trades the ability to pause for a discount. The estate
+  # here runs continuously, so the reservation is the honest comparison.
+  reservation_discount: 0.41
+  use_reservation: true
+
+  # Demand conversion: physical driver → capacity units. These factors are the most
+  # arguable numbers in the repo and the most important. Disagreeing with them is a
+  # pull request against this file, and the plan re-renders with the consequence.
+  cu_hours_per_compute_hour:
+    warehouse: 11.0
+    lakehouse: 9.0
+    data_factory: 2.0
+    # An Eventhouse is always on, so its compute term is a floor rather than a
+    # driver. The driver is the event rate, below.
+    eventhouse: 0.8
+  cu_hours_per_tb_scanned:
+    warehouse: 2.5
+    lakehouse: 4.0
+    data_factory: 0.0
+    eventhouse: 1.1
+  # Ingestion is what a streaming platform actually charges for, and an event rate
+  # is the only honest way to separate a 14,000/s telemetry firehose from a 900/s
+  # payment ledger. Both are "one always-on stream" if you count compute hours.
+  cu_hours_per_billion_events:
+    eventhouse: 55.0
+
+  # OneLake storage is billed outside the capacity.
+  storage_eur_per_gb_month: 0.021
+  # Eventhouse keeps a hot cache sized by retention; it is the part of a KQL database
+  # that surprises people on the invoice.
+  eventhouse_hot_cache_eur_per_gb_month: 0.11
+
+databricks:
+  # Effective €/DBU-hour including the Azure VM underneath, except where the SKU is
+  # serverless and the compute is inside the DBU rate.
+  eur_per_dbu:
+    sql_warehouse: 0.62
+    jobs_compute: 0.26
+    workflows: 0.26
+    structured_streaming: 0.31
+  dbu_hours_per_compute_hour:
+    sql_warehouse: 6.0
+    jobs_compute: 5.0
+    workflows: 1.2
+    structured_streaming: 0.6
+  dbu_hours_per_tb_scanned:
+    sql_warehouse: 1.6
+    jobs_compute: 1.2
+    workflows: 0.0
+    structured_streaming: 0.15
+  dbu_hours_per_billion_events:
+    structured_streaming: 40.0
+
+  # ADLS Gen2, hot tier.
+  storage_eur_per_gb_month: 0.018
+
+# Costs that attach to a *platform being used at all*, not to any one workload.
+# Two platforms means two of these, which is the number the "just use both" answer
+# usually forgets.
+platform_overhead_eur_per_month:
+  fabric: 900.0
+  databricks: 1400.0
+
+# What it costs to move one workload off Synapse, amortised across the programme so
+# it can sit in the same monthly number as everything else. A T-SQL surface that has
+# to be rewritten rather than lifted is the expensive case, which is exactly why R2
+# eliminates rather than penalises.
+migration:
+  amortise_months: 24.0
+  eur_per_workload:
+    dedicated_sql: 34000.0
+    serverless_view: 9000.0
+    spark_notebook: 21000.0
+    pipeline: 12000.0
+    stream: 46000.0
+  # Multiplier applied when the target platform cannot host the source's T-SQL
+  # surface and the workload has to be re-expressed rather than moved.
+  tsql_rewrite_multiplier: 2.4

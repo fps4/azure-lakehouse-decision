@@ -1,0 +1,76 @@
+# What each platform can do, and what it costs to run.
+#
+# Capability facts here are the ones that *eliminate* a platform for a workload.
+# They are deliberately few. A capability matrix with forty rows is a marketing
+# artifact; the four or five rows that actually rule something out are an
+# architecture artifact.
+#
+# Every capability claim should be re-checked against current Microsoft and
+# Databricks documentation before it decides a budget — both platforms move fast,
+# and this file is where the staleness lives (ADR-0006).
+
+target_region: westeurope
+
+fabric:
+  name: Microsoft Fabric
+  # Where a Fabric capacity can be placed for this tenant. A workload whose data may
+  # not come to rest outside a region absent from this list cannot go to Fabric,
+  # regardless of what it costs.
+  capacity_regions: [westeurope, northeurope]
+
+  surfaces:
+    dedicated_sql: warehouse       # Fabric Warehouse — T-SQL, multi-table transactions
+    serverless_view: lakehouse     # SQL analytics endpoint over OneLake
+    spark_notebook: lakehouse      # Fabric Spark
+    pipeline: data_factory         # Fabric Data Factory pipelines
+    stream: eventhouse             # Eventstream → Eventhouse (KQL Database)
+
+  capability:
+    # Fabric Warehouse supports multi-table transactional T-SQL. This is the single
+    # capability that most often keeps a dedicated SQL pool estate on the Microsoft
+    # side of the fence, and it is why the T-SQL rule (R2) exists at all.
+    tsql_transactions: true
+    tsql_procedures: true
+    # Direct Lake: Power BI reads Delta in OneLake with no import refresh and no
+    # DirectQuery round trip. Databricks has no equivalent — a semantic model over
+    # Databricks is Import or DirectQuery, both of which cost something.
+    powerbi_direct_lake: true
+    # Sub-second analytics over high-cardinality append-only telemetry is what a KQL
+    # database is for, and it is genuinely good at it.
+    subsecond_telemetry: true
+    # Arbitrary stateful stream processing with event-time watermarks, restatement of
+    # a window when a late event arrives, and exactly-once sinks. Eventstream and
+    # Eventhouse are ingestion-time and append-oriented; this is not their shape.
+    event_time_restatement: false
+    exactly_once_streaming: false
+    # Experiment tracking and a model registry exist in Fabric Data Science, but the
+    # served-endpoint and lifecycle story is thinner than MLflow on Databricks. Set
+    # to false here to mean "not the platform this estate should bet its ML on",
+    # which is a judgement — argue with it in a pull request.
+    ml_lifecycle: false
+
+databricks:
+  name: Databricks on Azure
+  workspace_regions: [westeurope, northeurope]
+
+  surfaces:
+    dedicated_sql: sql_warehouse
+    serverless_view: sql_warehouse
+    spark_notebook: jobs_compute
+    pipeline: workflows
+    stream: structured_streaming
+
+  capability:
+    # Databricks SQL is ANSI-leaning. Stored procedures and multi-statement
+    # transactions from a dedicated SQL pool do not lift and shift — they are a
+    # rewrite, and a rewrite is a project, not a migration.
+    tsql_transactions: false
+    tsql_procedures: false
+    powerbi_direct_lake: false
+    # Sub-second on high-cardinality telemetry is possible with enough warm compute,
+    # but it is not what the engine is shaped for and the cost of pretending it is
+    # shows up in the bill.
+    subsecond_telemetry: false
+    event_time_restatement: true
+    exactly_once_streaming: true
+    ml_lifecycle: true

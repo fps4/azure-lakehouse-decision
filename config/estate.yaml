@@ -1,0 +1,328 @@
+# The Synapse estate, as a catalog.
+#
+# Invented, not a client's — see the honesty statement in README.md. Shaped like a
+# mid-size Azure analytics estate that grew through Synapse Analytics between 2020
+# and 2024: a dedicated SQL pool carrying the finance and sales warehouse, serverless
+# views over ADLS for the raw zone, Spark notebooks doing the heavy transformation,
+# pipelines orchestrating it, and a telemetry stream that arrived later and never
+# quite fitted.
+#
+# Every field here is an *estate fact*, never a preference. Preferences live in
+# policy.yaml and cost_model.yaml (ADR-0005).
+#
+# kind:            dedicated_sql | serverless_view | spark_notebook | pipeline | stream
+# tsql_surface:    none | queries | procedures | transactions
+#   procedures   — stored procedures, T-SQL control flow
+#   transactions — multi-table transactional writes (BEGIN TRAN across tables)
+# consumer:        powerbi_direct_lake | powerbi_import | sql_client | notebook | app | ml
+# latency_class:   interactive | batch | subsecond
+
+- id: FCT_GL_POSTING
+  name: General ledger postings fact
+  domain: finance
+  kind: dedicated_sql
+  tsql_surface: transactions
+  size_gb: 2400.0
+  compute_hours_per_month: 190.0
+  gb_scanned_per_month: 48000.0
+  consumer: powerbi_direct_lake
+  latency_class: interactive
+  peak_concurrency: 60
+  latency_slo_seconds: 8.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: confidential }
+
+- id: DIM_ACCOUNT
+  name: Chart of accounts dimension
+  domain: finance
+  kind: dedicated_sql
+  tsql_surface: procedures
+  size_gb: 3.0
+  compute_hours_per_month: 12.0
+  gb_scanned_per_month: 900.0
+  consumer: powerbi_direct_lake
+  latency_class: interactive
+  peak_concurrency: 60
+  latency_slo_seconds: 5.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: FCT_SALES_ORDER
+  name: Sales order fact
+  domain: sales
+  kind: dedicated_sql
+  tsql_surface: procedures
+  size_gb: 1750.0
+  compute_hours_per_month: 210.0
+  gb_scanned_per_month: 61000.0
+  consumer: powerbi_direct_lake
+  latency_class: interactive
+  peak_concurrency: 85
+  latency_slo_seconds: 6.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: DIM_CUSTOMER
+  name: Customer dimension (SCD2)
+  domain: sales
+  kind: dedicated_sql
+  tsql_surface: transactions
+  size_gb: 40.0
+  compute_hours_per_month: 26.0
+  gb_scanned_per_month: 3100.0
+  consumer: powerbi_direct_lake
+  latency_class: interactive
+  peak_concurrency: 85
+  latency_slo_seconds: 5.0
+  governance: { residency: [westeurope], pii: true, classification: confidential }
+
+- id: FCT_INVENTORY_SNAP
+  name: Daily inventory snapshot
+  domain: supply_chain
+  kind: dedicated_sql
+  tsql_surface: queries
+  size_gb: 620.0
+  compute_hours_per_month: 74.0
+  gb_scanned_per_month: 12500.0
+  consumer: powerbi_import
+  latency_class: batch
+  peak_concurrency: 12
+  latency_slo_seconds: 60.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: VW_RAW_ORDERS
+  name: Serverless view over raw order landing
+  domain: sales
+  kind: serverless_view
+  tsql_surface: queries
+  size_gb: 3100.0
+  compute_hours_per_month: 0.0
+  gb_scanned_per_month: 22000.0
+  consumer: sql_client
+  latency_class: batch
+  peak_concurrency: 8
+  latency_slo_seconds: 90.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: VW_RAW_TELEMETRY
+  name: Serverless view over device telemetry landing
+  domain: iot
+  kind: serverless_view
+  tsql_surface: queries
+  size_gb: 18000.0
+  compute_hours_per_month: 0.0
+  gb_scanned_per_month: 96000.0
+  consumer: sql_client
+  latency_class: batch
+  peak_concurrency: 6
+  latency_slo_seconds: 120.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: VW_HR_HEADCOUNT
+  name: Serverless view over HR extracts
+  domain: hr
+  kind: serverless_view
+  tsql_surface: queries
+  size_gb: 9.0
+  compute_hours_per_month: 0.0
+  gb_scanned_per_month: 260.0
+  consumer: sql_client
+  latency_class: batch
+  peak_concurrency: 3
+  latency_slo_seconds: 60.0
+  # HR sits under a stricter residency rule than the rest of the estate. It is the
+  # object that makes the point that a platform decision is not only economic.
+  governance: { residency: [westeurope], pii: true, classification: restricted }
+
+- id: NB_SALES_CURATION
+  name: Sales curation notebook (PySpark)
+  domain: sales
+  kind: spark_notebook
+  tsql_surface: none
+  size_gb: 1750.0
+  compute_hours_per_month: 320.0
+  gb_scanned_per_month: 41000.0
+  consumer: notebook
+  latency_class: batch
+  peak_concurrency: 4
+  latency_slo_seconds: 1800.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: NB_FINANCE_ALLOCATION
+  name: Finance cost-allocation notebook
+  domain: finance
+  kind: spark_notebook
+  tsql_surface: none
+  size_gb: 2400.0
+  compute_hours_per_month: 265.0
+  gb_scanned_per_month: 36000.0
+  consumer: notebook
+  latency_class: batch
+  peak_concurrency: 3
+  latency_slo_seconds: 3600.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: confidential }
+
+- id: NB_DEMAND_FORECAST
+  name: Demand forecast training and scoring
+  domain: supply_chain
+  kind: spark_notebook
+  tsql_surface: none
+  size_gb: 900.0
+  compute_hours_per_month: 410.0
+  gb_scanned_per_month: 18000.0
+  # The estate's one genuine ML workload: experiment tracking, a model registry,
+  # and a served endpoint. It is the workload that decides itself.
+  consumer: ml
+  latency_class: batch
+  peak_concurrency: 6
+  latency_slo_seconds: 7200.0
+  ml_lifecycle: true
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: NB_CUSTOMER_360
+  name: Customer 360 assembly
+  domain: sales
+  kind: spark_notebook
+  tsql_surface: none
+  size_gb: 260.0
+  compute_hours_per_month: 145.0
+  gb_scanned_per_month: 9400.0
+  consumer: notebook
+  latency_class: batch
+  peak_concurrency: 2
+  latency_slo_seconds: 3600.0
+  governance: { residency: [westeurope], pii: true, classification: confidential }
+
+- id: NB_TELEMETRY_ROLLUP
+  name: Device telemetry hourly rollup
+  domain: iot
+  kind: spark_notebook
+  tsql_surface: none
+  size_gb: 18000.0
+  compute_hours_per_month: 520.0
+  gb_scanned_per_month: 140000.0
+  consumer: notebook
+  latency_class: batch
+  peak_concurrency: 8
+  latency_slo_seconds: 1800.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: PL_NIGHTLY_WAREHOUSE
+  name: Nightly warehouse orchestration
+  domain: platform
+  kind: pipeline
+  tsql_surface: procedures
+  size_gb: 0.0
+  compute_hours_per_month: 62.0
+  gb_scanned_per_month: 0.0
+  consumer: app
+  latency_class: batch
+  peak_concurrency: 1
+  latency_slo_seconds: 21600.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: PL_INGEST_PARTNERS
+  name: Partner file ingestion
+  domain: platform
+  kind: pipeline
+  tsql_surface: none
+  size_gb: 0.0
+  compute_hours_per_month: 88.0
+  gb_scanned_per_month: 0.0
+  consumer: app
+  latency_class: batch
+  peak_concurrency: 2
+  latency_slo_seconds: 7200.0
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: PL_HR_EXTRACT
+  name: HR extract orchestration
+  domain: hr
+  kind: pipeline
+  tsql_surface: none
+  size_gb: 0.0
+  compute_hours_per_month: 14.0
+  gb_scanned_per_month: 0.0
+  consumer: app
+  latency_class: batch
+  peak_concurrency: 1
+  latency_slo_seconds: 7200.0
+  governance: { residency: [westeurope], pii: true, classification: restricted }
+
+# ---- the streams -------------------------------------------------------------
+# Event Hub is the source for all four. Where they differ is what has to be true of
+# the answer, and that is what splits Eventhouse from Structured Streaming.
+
+- id: STR_DEVICE_TELEMETRY
+  name: Device telemetry — operational monitoring
+  domain: iot
+  kind: stream
+  tsql_surface: none
+  size_gb: 4200.0
+  compute_hours_per_month: 730.0
+  gb_scanned_per_month: 52000.0
+  consumer: app
+  latency_class: subsecond
+  peak_concurrency: 40
+  latency_slo_seconds: 2.0
+  events_per_second: 14000
+  retention_days: 90
+  # Append-only, queried by ingestion time, never restated. The shape KQL was built for.
+  late_arrival_tolerance_minutes: 0
+  exactly_once_required: false
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: STR_CLICKSTREAM
+  name: Web clickstream — product analytics
+  domain: sales
+  kind: stream
+  tsql_surface: none
+  size_gb: 1600.0
+  compute_hours_per_month: 730.0
+  gb_scanned_per_month: 21000.0
+  consumer: app
+  latency_class: subsecond
+  peak_concurrency: 25
+  latency_slo_seconds: 3.0
+  events_per_second: 6500
+  retention_days: 120
+  late_arrival_tolerance_minutes: 0
+  exactly_once_required: false
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
+
+- id: STR_PAYMENTS
+  name: Payment events — settlement ledger
+  domain: finance
+  kind: stream
+  tsql_surface: none
+  size_gb: 380.0
+  compute_hours_per_month: 730.0
+  gb_scanned_per_month: 4200.0
+  consumer: app
+  latency_class: interactive
+  peak_concurrency: 10
+  latency_slo_seconds: 15.0
+  events_per_second: 900
+  retention_days: 2555
+  # Mobile clients go offline and settle late. The window has to be *restated* by
+  # event time when they come back, and the same payment must never be counted
+  # twice. Those two sentences are the whole reason this workload is not an
+  # append-only telemetry stream.
+  late_arrival_tolerance_minutes: 120
+  exactly_once_required: true
+  governance: { residency: [westeurope], pii: true, classification: restricted }
+
+- id: STR_INVENTORY_MOVE
+  name: Warehouse stock movements
+  domain: supply_chain
+  kind: stream
+  tsql_surface: none
+  size_gb: 540.0
+  compute_hours_per_month: 730.0
+  gb_scanned_per_month: 7600.0
+  consumer: app
+  latency_class: interactive
+  peak_concurrency: 14
+  latency_slo_seconds: 20.0
+  events_per_second: 1800
+  retention_days: 400
+  late_arrival_tolerance_minutes: 45
+  exactly_once_required: true
+  governance: { residency: [westeurope, northeurope], pii: false, classification: internal }
