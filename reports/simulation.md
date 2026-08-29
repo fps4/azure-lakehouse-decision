@@ -24,7 +24,7 @@ The streaming shape restated **245 windows** it had already written, using a 120
 
 **This is not a defect in the ingestion-time engine.** It is doing precisely what an append-only telemetry store should do, on a workload that needed something else. Two workloads in the estate — device telemetry and clickstream — want exactly this behaviour and are assigned to it. The payment ledger is not one of them, and R3 is what keeps it from being routed there because it was also a stream.
 
-Sink: written to `data/delta/payments_by_window` as a Delta table — 13 rows, version 1, with a transaction log on disk. No Spark and no JVM were involved, which is worth knowing but is not what Databricks is being bought for.
+Sink: written to `data/delta/payments_by_window` as a Delta table — 13 rows, version 3, with a transaction log on disk. No Spark and no JVM were involved, which is worth knowing but is not what Databricks is being bought for.
 
 ## R2 — what a multi-table transaction is actually buying
 
@@ -54,5 +54,6 @@ DuckDB stands in for both engines. Everything above is therefore a statement abo
 **Does not survive it — do not quote any of this:**
 
 - Throughput, latency, cost per query, cluster or capacity sizing. Not measured, not inferable.
-- Fabric Eventhouse and Databricks Structured Streaming are not in this process. Their real behaviour under load, their operational surface and their actual guarantees must be checked against current vendor documentation.
+- Fabric Eventhouse, Databricks Structured Streaming and Snowpipe Streaming are none of them in this process. Their real behaviour under load, their operational surface and their actual guarantees must be checked against current vendor documentation.
+- What is executed here are two *semantics*, not three products: an ingestion-time append-only engine against an event-time restating one. Two of the three candidate platforms fall on the first side of that line, for quite different product reasons, and this simulation cannot tell those reasons apart — nor does the workload care.
 - The Delta table written above is `deltalake` on a laptop, not Databricks. The format is real; the runtime is not.

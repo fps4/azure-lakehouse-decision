@@ -3,6 +3,11 @@
 Everything the engine reasons about is data on disk under ``config/``. Nothing
 about a particular estate is compiled into the rules (ADR-0005), so pointing this
 at a different estate is an edit to YAML, not to Python.
+
+That extends to the platform list itself (ADR-0007). The engine knows about two
+*pricing shapes* — a pre-paid capacity and a meter — and not about three vendors.
+Adding a fourth target is an entry in ``platforms.yaml`` and ``cost_model.yaml``
+plus a member of :class:`Platform`; it is not a new branch in the rules.
 """
 
 from __future__ import annotations
@@ -27,11 +32,21 @@ class Platform(StrEnum):
 
     FABRIC = "FABRIC"
     DATABRICKS = "DATABRICKS"
+    SNOWFLAKE = "SNOWFLAKE"
     STAY_ON_SYNAPSE = "STAY_ON_SYNAPSE"
 
+    @property
+    def key(self) -> str:
+        """The lowercase key this platform is configured under."""
+        return self.value.lower()
 
-#: The platforms the economics stage prices and compares.
-CANDIDATES = (Platform.FABRIC, Platform.DATABRICKS)
+
+#: The platforms the economics stage prices and compares. Order is the tie-break
+#: order and therefore has to be stable — determinism is a working rule, and a set
+#: here would make two runs differ (AGENTS.md rule 8).
+CANDIDATES = (Platform.FABRIC, Platform.DATABRICKS, Platform.SNOWFLAKE)
+
+Pricing = Literal["capacity", "metered"]
 
 WorkloadKind = Literal["dedicated_sql", "serverless_view", "spark_notebook", "pipeline", "stream"]
 TsqlSurface = Literal["none", "queries", "procedures", "transactions"]
@@ -104,6 +119,7 @@ class PlatformCapability(BaseModel):
 
 class PlatformSpec(BaseModel):
     name: str
+    pricing: Pricing
     capacity_regions: list[str] = Field(default_factory=list)
     workspace_regions: list[str] = Field(default_factory=list)
     surfaces: dict[str, str]
@@ -111,17 +127,31 @@ class PlatformSpec(BaseModel):
 
     @property
     def regions(self) -> list[str]:
-        """Fabric calls it a capacity, Databricks calls it a workspace. Same question."""
+        """Fabric calls it a capacity, the others a workspace or an account.
+
+        Same question: where is this platform allowed to put the data down.
+        """
         return self.capacity_regions or self.workspace_regions
+
+    @property
+    def is_metered(self) -> bool:
+        return self.pricing == "metered"
 
 
 class Platforms(BaseModel):
     target_region: str
-    fabric: PlatformSpec
-    databricks: PlatformSpec
+    platforms: dict[str, PlatformSpec]
 
     def spec(self, platform: Platform) -> PlatformSpec:
-        return self.fabric if platform is Platform.FABRIC else self.databricks
+        try:
+            return self.platforms[platform.key]
+        except KeyError:
+            raise KeyError(f"no configuration for platform {platform.value}") from None
+
+    @property
+    def fabric(self) -> PlatformSpec:
+        """The capacity platform, by the name everything else calls it."""
+        return self.spec(Platform.FABRIC)
 
 
 class ResidencyPolicy(BaseModel):
@@ -143,6 +173,11 @@ class MlPolicy(BaseModel):
     eliminate_when_lifecycle_unsupported: bool = True
 
 
+class PlatformsPolicy(BaseModel):
+    review_platform_overhead: bool = True
+    pinned_platforms_are_not_reviewable: bool = True
+
+
 class SemanticsPolicy(BaseModel):
     prefer_direct_lake_consumers: bool = True
     max_premium_ratio: float = 1.30
@@ -159,6 +194,7 @@ class Policy(BaseModel):
     tsql: TsqlPolicy = Field(default_factory=TsqlPolicy)
     streaming: StreamingPolicy = Field(default_factory=StreamingPolicy)
     ml: MlPolicy = Field(default_factory=MlPolicy)
+    platforms: PlatformsPolicy = Field(default_factory=PlatformsPolicy)
     semantics: SemanticsPolicy = Field(default_factory=SemanticsPolicy)
     capacity: CapacityPolicy = Field(default_factory=CapacityPolicy)
 
@@ -181,11 +217,21 @@ class FabricCosts(BaseModel):
         return self.eur_per_cu_hour
 
 
-class DatabricksCosts(BaseModel):
-    eur_per_dbu: dict[str, float]
-    dbu_hours_per_compute_hour: dict[str, float]
-    dbu_hours_per_tb_scanned: dict[str, float]
-    dbu_hours_per_billion_events: dict[str, float] = Field(default_factory=dict)
+class MeteredCosts(BaseModel):
+    """One metered platform's meter.
+
+    The same five fields describe a DBU and a Snowflake credit, because the two
+    platforms bill in the same *shape* and differ only in slope. Holding them in one
+    model is what keeps the engine from growing a per-vendor branch, and what makes
+    "which meter is cheaper for this surface" a question the config answers rather
+    than the code.
+    """
+
+    unit: str
+    eur_per_unit: dict[str, float]
+    units_per_compute_hour: dict[str, float]
+    units_per_tb_scanned: dict[str, float]
+    units_per_billion_events: dict[str, float] = Field(default_factory=dict)
     storage_eur_per_gb_month: float
 
 
@@ -199,9 +245,18 @@ class CostModel(BaseModel):
     currency: str
     hours_per_month: float
     fabric: FabricCosts
-    databricks: DatabricksCosts
+    metered: dict[str, MeteredCosts]
     platform_overhead_eur_per_month: dict[str, float]
     migration: MigrationCosts
+
+    def meter(self, platform: Platform) -> MeteredCosts:
+        try:
+            return self.metered[platform.key]
+        except KeyError:
+            raise KeyError(f"{platform.value} has no meter in the cost model") from None
+
+    def overhead(self, platform: Platform) -> float:
+        return self.platform_overhead_eur_per_month.get(platform.key, 0.0)
 
 
 class Catalog(BaseModel):
@@ -218,6 +273,28 @@ class Catalog(BaseModel):
                 return w
         raise KeyError(f"unknown workload: {workload_id}")
 
+    @property
+    def metered_platforms(self) -> tuple[Platform, ...]:
+        """Candidates that bill by consumption, in the stable candidate order."""
+        return tuple(p for p in CANDIDATES if self.platforms.spec(p).is_metered)
+
+    @property
+    def capacity_platform(self) -> Platform:
+        """The one candidate priced as a pre-paid pool.
+
+        Singular on purpose. Two capacity platforms in one estate is a genuinely
+        different allocation problem — two ladders interacting, where filling one
+        does nothing to empty the other — and pretending the code below solves it
+        would be the dishonest move. It raises instead.
+        """
+        capacity = [p for p in CANDIDATES if not self.platforms.spec(p).is_metered]
+        if len(capacity) != 1:
+            raise ValueError(
+                f"expected exactly one capacity-priced platform, found {len(capacity)}: "
+                f"{[p.value for p in capacity]}"
+            )
+        return capacity[0]
+
 
 def _read(path: Path) -> object:
     with path.open(encoding="utf-8") as fh:
@@ -227,15 +304,29 @@ def _read(path: Path) -> object:
 def load_catalog(config_dir: Path | None = None) -> Catalog:
     """Load and validate the whole configuration set.
 
-    Validation is deliberately strict. A typo in a workload kind or a missing
-    consumer profile should fail here, loudly, rather than silently become a
-    default that changes a platform decision.
+    Validation is deliberately strict. A typo in a workload kind, a missing consumer
+    profile, or a candidate platform with no meter behind it should fail here,
+    loudly, rather than silently become a default that changes a platform decision.
     """
     cfg = Path(config_dir) if config_dir else CONFIG_DIR
     platforms = Platforms.model_validate(_read(cfg / "platforms.yaml"))
     policy = Policy.model_validate(_read(cfg / "policy.yaml"))
     costs = CostModel.model_validate(_read(cfg / "cost_model.yaml"))
     workloads = [Workload.model_validate(w) for w in _read(cfg / "estate.yaml")]
+
+    cat = Catalog(platforms=platforms, policy=policy, costs=costs, workloads=workloads)
+
+    # Every candidate must be configured, priced in the shape it claims, and able to
+    # host every kind in the estate. A metered candidate with no meter behind it
+    # would silently cost nothing and win everything, which is the failure this
+    # catches before it reaches a report.
+    _ = cat.capacity_platform  # raises unless exactly one platform is a capacity
+    for p in CANDIDATES:
+        spec = platforms.spec(p)
+        if spec.is_metered:
+            costs.meter(p)
+        if p.key not in costs.platform_overhead_eur_per_month:
+            raise ValueError(f"{spec.name} has no platform overhead in the cost model")
 
     seen: set[str] = set()
     for w in workloads:
@@ -247,4 +338,4 @@ def load_catalog(config_dir: Path | None = None) -> Catalog:
             if w.kind not in spec.surfaces:
                 raise ValueError(f"{w.id}: {spec.name} has no surface for kind {w.kind!r}")
 
-    return Catalog(platforms=platforms, policy=policy, costs=costs, workloads=workloads)
+    return cat

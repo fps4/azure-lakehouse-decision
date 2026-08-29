@@ -1,76 +1,151 @@
-# What each platform can do, and what it costs to run.
+# What each platform can do, and how it is priced.
 #
 # Capability facts here are the ones that *eliminate* a platform for a workload.
 # They are deliberately few. A capability matrix with forty rows is a marketing
 # artifact; the four or five rows that actually rule something out are an
 # architecture artifact.
 #
-# Every capability claim should be re-checked against current Microsoft and
-# Databricks documentation before it decides a budget — both platforms move fast,
-# and this file is where the staleness lives (ADR-0006).
+# Every capability claim should be re-checked against current Microsoft, Databricks
+# and Snowflake documentation before it decides a budget — all three products move
+# fast, and this file is where the staleness lives (ADR-0006).
+#
+# `pricing` is the field that makes the engine general (ADR-0007). It says which
+# *shape* a platform bills in, and the rest of the code branches on that and not on
+# a vendor name:
+#
+#   capacity  a pre-paid pool. A workload has no standalone price; the only honest
+#             per-workload figure is what it did to the size of the pool.
+#   metered   a straight line in consumption. A workload's cost is a property of
+#             the workload and stays true on its own.
+#
+# Exactly one platform here is `capacity`, and that asymmetry is the whole argument.
 
 target_region: westeurope
 
-fabric:
-  name: Microsoft Fabric
-  # Where a Fabric capacity can be placed for this tenant. A workload whose data may
-  # not come to rest outside a region absent from this list cannot go to Fabric,
-  # regardless of what it costs.
-  capacity_regions: [westeurope, northeurope]
+platforms:
 
-  surfaces:
-    dedicated_sql: warehouse       # Fabric Warehouse — T-SQL, multi-table transactions
-    serverless_view: lakehouse     # SQL analytics endpoint over OneLake
-    spark_notebook: lakehouse      # Fabric Spark
-    pipeline: data_factory         # Fabric Data Factory pipelines
-    stream: eventhouse             # Eventstream → Eventhouse (KQL Database)
+  fabric:
+    name: Microsoft Fabric
+    pricing: capacity
+    # Where a Fabric capacity can be placed for this tenant. A workload whose data
+    # may not come to rest outside a region absent from this list cannot go to
+    # Fabric, regardless of what it costs.
+    capacity_regions: [westeurope, northeurope]
 
-  capability:
-    # Fabric Warehouse supports multi-table transactional T-SQL. This is the single
-    # capability that most often keeps a dedicated SQL pool estate on the Microsoft
-    # side of the fence, and it is why the T-SQL rule (R2) exists at all.
-    tsql_transactions: true
-    tsql_procedures: true
-    # Direct Lake: Power BI reads Delta in OneLake with no import refresh and no
-    # DirectQuery round trip. Databricks has no equivalent — a semantic model over
-    # Databricks is Import or DirectQuery, both of which cost something.
-    powerbi_direct_lake: true
-    # Sub-second analytics over high-cardinality append-only telemetry is what a KQL
-    # database is for, and it is genuinely good at it.
-    subsecond_telemetry: true
-    # Arbitrary stateful stream processing with event-time watermarks, restatement of
-    # a window when a late event arrives, and exactly-once sinks. Eventstream and
-    # Eventhouse are ingestion-time and append-oriented; this is not their shape.
-    event_time_restatement: false
-    exactly_once_streaming: false
-    # Experiment tracking and a model registry exist in Fabric Data Science, but the
-    # served-endpoint and lifecycle story is thinner than MLflow on Databricks. Set
-    # to false here to mean "not the platform this estate should bet its ML on",
-    # which is a judgement — argue with it in a pull request.
-    ml_lifecycle: false
+    surfaces:
+      dedicated_sql: warehouse       # Fabric Warehouse — T-SQL, multi-table transactions
+      serverless_view: lakehouse     # SQL analytics endpoint over OneLake
+      spark_notebook: lakehouse      # Fabric Spark
+      pipeline: data_factory         # Fabric Data Factory pipelines
+      stream: eventhouse             # Eventstream → Eventhouse (KQL Database)
 
-databricks:
-  name: Databricks on Azure
-  workspace_regions: [westeurope, northeurope]
+    capability:
+      # Fabric Warehouse supports multi-table transactional T-SQL. This is the single
+      # capability that most often keeps a dedicated SQL pool estate on the Microsoft
+      # side of the fence, and it is why the T-SQL rule (R2) exists at all.
+      tsql_transactions: true
+      tsql_procedures: true
+      # Direct Lake: Power BI reads Delta in OneLake with no import refresh and no
+      # DirectQuery round trip. Neither of the other two has an equivalent — a
+      # semantic model over them is Import or DirectQuery, both of which cost
+      # something.
+      powerbi_direct_lake: true
+      # Sub-second analytics over high-cardinality append-only telemetry is what a KQL
+      # database is for, and it is genuinely good at it.
+      subsecond_telemetry: true
+      # Arbitrary stateful stream processing with event-time watermarks, restatement of
+      # a window when a late event arrives, and exactly-once sinks. Eventstream and
+      # Eventhouse are ingestion-time and append-oriented; this is not their shape.
+      event_time_restatement: false
+      exactly_once_streaming: false
+      # Experiment tracking and a model registry exist in Fabric Data Science, but the
+      # served-endpoint and lifecycle story is thinner than MLflow on Databricks. Set
+      # to false here to mean "not the platform this estate should bet its ML on",
+      # which is a judgement — argue with it in a pull request.
+      ml_lifecycle: false
 
-  surfaces:
-    dedicated_sql: sql_warehouse
-    serverless_view: sql_warehouse
-    spark_notebook: jobs_compute
-    pipeline: workflows
-    stream: structured_streaming
+  databricks:
+    name: Databricks on Azure
+    pricing: metered
+    workspace_regions: [westeurope, northeurope]
 
-  capability:
-    # Databricks SQL is ANSI-leaning. Stored procedures and multi-statement
-    # transactions from a dedicated SQL pool do not lift and shift — they are a
-    # rewrite, and a rewrite is a project, not a migration.
-    tsql_transactions: false
-    tsql_procedures: false
-    powerbi_direct_lake: false
-    # Sub-second on high-cardinality telemetry is possible with enough warm compute,
-    # but it is not what the engine is shaped for and the cost of pretending it is
-    # shows up in the bill.
-    subsecond_telemetry: false
-    event_time_restatement: true
-    exactly_once_streaming: true
-    ml_lifecycle: true
+    surfaces:
+      dedicated_sql: sql_warehouse
+      serverless_view: sql_warehouse
+      spark_notebook: jobs_compute
+      pipeline: workflows
+      stream: structured_streaming
+
+    capability:
+      # Databricks SQL is ANSI-leaning. Stored procedures and multi-statement
+      # transactions from a dedicated SQL pool do not lift and shift — they are a
+      # rewrite, and a rewrite is a project, not a migration.
+      #
+      # Note the *kind* of gap, because it is not the same as Snowflake's below:
+      # here the missing thing is atomicity across two tables in one commit. That is
+      # the failure `make simulate` executes, and the 893 divergent customers in
+      # reports/simulation.md are what it looks like.
+      tsql_transactions: false
+      tsql_procedures: false
+      powerbi_direct_lake: false
+      # Sub-second on high-cardinality telemetry is possible with enough warm compute,
+      # but it is not what the engine is shaped for and the cost of pretending it is
+      # shows up in the bill.
+      subsecond_telemetry: false
+      event_time_restatement: true
+      exactly_once_streaming: true
+      ml_lifecycle: true
+
+  snowflake:
+    name: Snowflake on Azure
+    pricing: metered
+    # A Snowflake account lives in exactly one region. This is a sharper constraint
+    # than it looks: a second region is a second account plus replication, not a
+    # deployment option, so the account's region is an estate-level fact rather than
+    # a per-workload one. West Europe (Netherlands) is the account assumed here.
+    # Re-check before use — the Azure region list moves.
+    workspace_regions: [westeurope]
+
+    surfaces:
+      dedicated_sql: virtual_warehouse
+      serverless_view: virtual_warehouse
+      spark_notebook: snowpark
+      pipeline: tasks_streams        # Tasks + Streams (or Dynamic Tables)
+      stream: snowpipe_streaming
+
+    capability:
+      # Snowflake's gap here is a *dialect* gap, not an atomicity gap, and conflating
+      # the two would be dishonest. Snowflake has genuine ACID multi-statement
+      # transactions — the divergence the batch simulation produces would not happen
+      # there. What it does not have is T-SQL: a dedicated SQL pool's procedures and
+      # its transactional blocks are re-expressed, not moved. R2 eliminates on that
+      # ground and the cost model prices the rewrite, which is the same outcome by a
+      # different road, and the reason the two facts are kept separate in this file.
+      tsql_transactions: false
+      tsql_procedures: false
+      # Power BI over Snowflake is Import or DirectQuery. This is the claim in this
+      # file most likely to age: Fabric can shortcut to Iceberg tables, so Direct
+      # Lake over Snowflake-managed Iceberg is the direction of travel. When it
+      # lands, flip this and re-run — R6 will change its mind in public.
+      powerbi_direct_lake: false
+      # A warehouse kept warm will answer fast, and hybrid tables serve point
+      # lookups. Neither is an engine for sub-second interactive scan over
+      # high-cardinality telemetry at concurrency, which is the workload R4 is about.
+      subsecond_telemetry: false
+      # Snowpipe Streaming ingests continuously and Dynamic Tables refresh
+      # incrementally against a declared lag. That is not arbitrary stateful
+      # processing with an event-time watermark that reopens and restates a closed
+      # window when a late event arrives.
+      event_time_restatement: false
+      # Deliberately conservative, and arguable. Snowpipe Streaming does give
+      # exactly-once *ingestion* through channel offset tokens. R3 is asking a
+      # bigger question — an exactly-once guarantee for a stateful transformation
+      # into a ledger — and that is not the same promise. If your reading is that
+      # the ingestion guarantee is enough for your ledger, flip this in a pull
+      # request and the plan will re-render.
+      exactly_once_streaming: false
+      # Model Registry, Feature Store and Snowpark ML are real, and serving runs
+      # through Snowpark Container Services. Held to the same bar as Fabric above:
+      # "not the platform this estate should bet its ML on" is a judgement about
+      # this estate, not a statement about the product.
+      ml_lifecycle: false
