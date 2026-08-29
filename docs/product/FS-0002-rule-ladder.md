@@ -13,7 +13,8 @@ economics chooses (ADR-0002).
     R6  semantics premium (Direct Lake)
     R7  economics, capacity-aware
     R8  step-boundary review
-    R9  locality (advisory)
+    R9  platform portfolio review
+    R10 locality (advisory)
 
 ## Acceptance criteria
 
@@ -29,6 +30,17 @@ economics chooses (ADR-0002).
   configuration.
 - **THE SYSTEM SHALL** record, per workload, the rule that decided it and a reason
   that names the specific fact responsible.
+- **WHERE** more than one meter survives for a workload, **THE SYSTEM SHALL**
+  compare all of them and **SHALL** record what the rejected ones would have cost.
+- **WHEN** a platform was opened by R7 on economics alone, **THE SYSTEM SHALL**
+  check at R9 whether its metered cost plus its platform overhead exceeds the cost
+  of re-homing its workloads to platforms already open, and **SHALL** close it when
+  it does (ADR-0007).
+- **IF** any workload was pinned to a platform by R1–R5, **THEN THE SYSTEM SHALL
+  NOT** review that platform at R9 — its overhead is not a choice.
+- **IF** a candidate platform receives no workloads, **THEN THE SYSTEM SHALL**
+  report that as a result, distinguishing "never the cheapest meter" from "cheapest
+  on workloads a constraint eliminated it from".
 
 ## Covered by
 

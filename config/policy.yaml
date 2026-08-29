@@ -39,6 +39,19 @@ ml:
   # see the comment in platforms.yaml.
   eliminate_when_lifecycle_unsupported: true
 
+platforms:
+  # A platform costs something to operate whether it carries twenty workloads or
+  # one: the contract, the landing zone, the identity integration, the people who
+  # know it. That cost is not divisible by workload, so R7 — which places one
+  # workload at a time — cannot see it. R9 does, once the whole allocation is
+  # visible, and asks of every platform R7 opened on economics alone: did it carry
+  # enough to pay for itself?
+  review_platform_overhead: true
+  # A platform that R1-R5 pinned a workload onto is not reviewable. Its overhead is
+  # not a choice — some workload can go nowhere else — so free workloads may join it
+  # for the price of their own consumption and nothing more.
+  pinned_platforms_are_not_reviewable: true
+
 semantics:
   # Direct Lake is worth paying a bounded premium for: a Power BI semantic model
   # that reads Delta in place has no import refresh window to fail and no

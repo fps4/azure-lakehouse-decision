@@ -8,8 +8,8 @@ Every euro figure below is an **illustrative placeholder shaped like list pricin
 
 | Destination | Workloads |
 |---|---|
-| Fabric | 15 |
-| Databricks | 4 |
+| Microsoft Fabric | 15 |
+| Databricks on Azure | 4 |
 | stays on Synapse | 1 |
 
 ## The capacity
@@ -20,84 +20,109 @@ The rung was chosen by the **total** allowance: 32.0 CU required after headroom,
 
 **R8 · step-boundary review.** F16 is unreachable: the workloads pinned to Fabric by R1–R5 alone require 19.6 CU (interactive-bound). The capacity floor is set by constraints, not by the batch workloads R7 added — so evicting batch cannot shrink it.
 
+## The platforms, and whether they paid for themselves
+
+A platform costs money to operate whether it is busy or not, and that cost is not divisible by workload. R7 places one workload at a time and cannot see it. R9 can, once the whole allocation exists — and it is the rule that only starts to matter when there is more than one meter to choose between ([ADR-0007](../docs/design/decisions/0007-a-platform-costs-something-to-open.md)).
+
+| Platform | Workloads | Metered €/mo | Overhead €/mo | R9 |
+|---|---:|---:|---:|---|
+| Microsoft Fabric | 15 | — | 900 | not reviewable — it is the capacity |
+| Databricks on Azure | 4 | 1,618 | 1,400 | not reviewable — R1–R5 pinned a workload to it |
+| Snowflake on Azure | 0 | 0 | 0 | nothing to review — it won no workloads, so it is not operated |
+
+
+**Snowflake on Azure won nothing — and it is the most interesting row in this plan.** It was the cheapest meter on 5 of 20 workloads. On 4 of those it is not allowed to compete: `FCT_GL_POSTING`, `DIM_ACCOUNT`, `FCT_SALES_ORDER`, `DIM_CUSTOMER` — eliminated by R2 before any price was looked at. **The workloads it prices best are precisely the ones a constraint takes away from it**, which is a conclusion neither a capability matrix nor a price table can reach on its own, because each holds only half of it. On the remaining 1 (`FCT_INVENTORY_SNAP`) it was allowed to compete and still lost — not to the other meter, but to free capacity the estate had already bought. A meter cannot underbid €0. Worth being explicit about what this is not: it is not a verdict on the product. It is a verdict on this estate, whose expensive work is Spark-shaped and whose SQL-shaped work is locked to T-SQL. Change either fact and the answer moves.
+
 ## The bill
 
 | Line | €/month | Note |
 |---|---:|---|
 | Fabric capacity (F32) | 2,756 | pre-paid; carries 15 workloads |
 | Fabric storage | 1,688 | OneLake + Eventhouse hot cache |
-| Databricks metered | 1,618 | 4 workloads, straight-line |
-| Platform overhead | 2,300 | paid per platform operated, not per workload |
+| Databricks on Azure metered | 1,618 | 4 workloads, straight-line |
+| Platform overhead | 2,300 | 2 platforms operated; paid per platform, not per workload |
 | **Run, total** | **8,362** | recurs forever |
 | Migration, amortised | 19,833 | over 24 months |
 | **Total** | **28,195** | |
 
-The migration is **70% of the bill over this horizon, and it is very nearly the same number on either platform** — it differs only where a T-SQL surface would have to be rewritten rather than moved. The platform choice moves the smaller half. That does not make it unimportant: run cost is the half that never stops. But a Fabric-versus-Databricks argument that never says this out loud is an argument with a missing premise.
+The migration is **70% of the bill over this horizon, and it is very nearly the same number on every target** — it differs only where a T-SQL surface would have to be rewritten rather than moved. The platform choice moves the smaller half. That does not make it unimportant: run cost is the half that never stops. But a platform argument that never says this out loud is an argument with a missing premise.
 
 ## Every workload, with the reason in the row
 
-| Workload | Kind | → | Surface | CU-h/mo | €/mo | Rule | Why |
-|---|---|---|---|---:|---:|---|---|
-| `FCT_GL_POSTING` | dedicated_sql | Fabric | warehouse | 2,207 | 0 | R1-R5 | Only surviving platform — [R2] the workload is written as T-SQL transactions; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here |
-| `DIM_ACCOUNT` | dedicated_sql | Fabric | warehouse | 134 | 0 | R1-R5 | Only surviving platform — [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here |
-| `FCT_SALES_ORDER` | dedicated_sql | Fabric | warehouse | 2,459 | 0 | R1-R5 | Only surviving platform — [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here |
-| `DIM_CUSTOMER` | dedicated_sql | Fabric | warehouse | 294 | 0 | R1-R5 | Only surviving platform — [R2] the workload is written as T-SQL transactions; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here |
-| `FCT_INVENTORY_SNAP` | dedicated_sql | Fabric | warehouse | 845 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €299/month metered. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
-| `VW_RAW_ORDERS` | serverless_view | Fabric | lakehouse | 86 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €77/month metered. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
-| `VW_RAW_TELEMETRY` | serverless_view | Fabric | lakehouse | 375 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €417/month metered. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
-| `VW_HR_HEADCOUNT` | serverless_view | Fabric | lakehouse | 1 | 0 | R1-R5 | Only surviving platform — [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change |
-| `NB_SALES_CURATION` | spark_notebook | Databricks | jobs_compute | 3,040 | 460 | R7 | Would push the capacity to F64, a step of €2,756/month, against €460/month metered. The marginal workload that forces a rung pays for the whole rung |
-| `NB_FINANCE_ALLOCATION` | spark_notebook | Databricks | jobs_compute | 2,526 | 399 | R7 | Would push the capacity to F64, a step of €2,756/month, against €399/month metered. The marginal workload that forces a rung pays for the whole rung |
-| `NB_DEMAND_FORECAST` | spark_notebook | Databricks | jobs_compute | 3,760 | 555 | R1-R5 | Only surviving platform — [R5] experiment tracking, a model registry and a served endpoint; Microsoft Fabric has the pieces but not the lifecycle this estate needs |
-| `NB_CUSTOMER_360` | spark_notebook | Fabric | lakehouse | 1,342 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €196/month metered. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
-| `NB_TELEMETRY_ROLLUP` | spark_notebook | Fabric | lakehouse | 5,227 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €1,043/month metered. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
-| `PL_NIGHTLY_WAREHOUSE` | pipeline | Fabric | data_factory | 124 | 0 | R1-R5 | Only surviving platform — [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here |
-| `PL_INGEST_PARTNERS` | pipeline | Fabric | data_factory | 176 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €27/month metered. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
-| `PL_HR_EXTRACT` | pipeline | Fabric | data_factory | 28 | 0 | R1-R5 | Only surviving platform — [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change |
-| `STR_DEVICE_TELEMETRY` | stream | Fabric | eventhouse | 2,663 | 0 | R1-R5 | Only surviving platform — [R4] sub-second interactive query over high-cardinality telemetry at 40 concurrent; Databricks on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine |
-| `STR_CLICKSTREAM` | stream | Fabric | eventhouse | 1,546 | 0 | R1-R5 | Only surviving platform — [R4] sub-second interactive query over high-cardinality telemetry at 25 concurrent; Databricks on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine |
-| `STR_PAYMENTS` | stream | stays on Synapse | synapse | 719 | 0 | R1-R5 | Every candidate was eliminated by a constraint. The honest answer is that this workload does not have a target yet — change a constraint or accept that it stays where it is. A plan that quietly assigns it anyway is a plan that fails in year two |
-| `STR_INVENTORY_MOVE` | stream | Databricks | structured_streaming | 852 | 205 | R1-R5 | Only surviving platform — [R3] events arrive up to 45 min late and the window has to be restated by event time; Microsoft Fabric aggregates by ingestion time and does not go back |
+| Workload | Kind | → | Surface | CU-h/mo | Databricks €/mo | Snowflake €/mo | €/mo | Rule | Why |
+|---|---|---|---|---:|---:|---:|---:|---|---|
+| `FCT_GL_POSTING` | dedicated_sql | Microsoft Fabric | warehouse | 2,207 | 796 | 647 | 0 | R1-R5 | Only surviving platform — R2 ruled out Databricks on Azure and Snowflake on Azure |
+| `DIM_ACCOUNT` | dedicated_sql | Microsoft Fabric | warehouse | 134 | 46 | 35 | 0 | R1-R5 | Only surviving platform — R2 ruled out Databricks on Azure and Snowflake on Azure |
+| `FCT_SALES_ORDER` | dedicated_sql | Microsoft Fabric | warehouse | 2,459 | 872 | 703 | 0 | R1-R5 | Only surviving platform — R2 ruled out Databricks on Azure and Snowflake on Azure |
+| `DIM_CUSTOMER` | dedicated_sql | Microsoft Fabric | warehouse | 294 | 100 | 78 | 0 | R1-R5 | Only surviving platform — R2 ruled out Databricks on Azure and Snowflake on Azure |
+| `FCT_INVENTORY_SNAP` | dedicated_sql | Microsoft Fabric | warehouse | 845 | 299 | 238 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €238/month on Snowflake on Azure, the cheapest meter that survived. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
+| `VW_RAW_ORDERS` | serverless_view | Microsoft Fabric | lakehouse | 86 | 77 | 95 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €77/month on Databricks on Azure, the cheapest meter that survived. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
+| `VW_RAW_TELEMETRY` | serverless_view | Microsoft Fabric | lakehouse | 375 | 417 | 516 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €417/month on Databricks on Azure, the cheapest meter that survived. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
+| `VW_HR_HEADCOUNT` | serverless_view | Microsoft Fabric | lakehouse | 1 | 0 | 0 | 0 | R1-R5 | Only surviving platform — R1 ruled out Databricks on Azure and Snowflake on Azure |
+| `NB_SALES_CURATION` | spark_notebook | Databricks on Azure | jobs_compute | 3,040 | 460 | 2,469 | 460 | R7 | Would push the capacity to F64, a step of €2,756/month, against €460/month on Databricks on Azure (Snowflake on Azure €2,469). The marginal workload that forces a rung pays for the whole rung |
+| `NB_FINANCE_ALLOCATION` | spark_notebook | Databricks on Azure | jobs_compute | 2,526 | 399 | 2,069 | 399 | R7 | Would push the capacity to F64, a step of €2,756/month, against €399/month on Databricks on Azure (Snowflake on Azure €2,069). The marginal workload that forces a rung pays for the whole rung |
+| `NB_DEMAND_FORECAST` | spark_notebook | Databricks on Azure | jobs_compute | 3,760 | 555 | 3,084 | 555 | R1-R5 | Only surviving platform — R5 ruled out Microsoft Fabric and Snowflake on Azure |
+| `NB_CUSTOMER_360` | spark_notebook | Microsoft Fabric | lakehouse | 1,342 | 196 | 1,094 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €196/month on Databricks on Azure, the cheapest meter that survived. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
+| `NB_TELEMETRY_ROLLUP` | spark_notebook | Microsoft Fabric | lakehouse | 5,227 | 1,043 | 4,462 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €1,043/month on Databricks on Azure, the cheapest meter that survived. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
+| `PL_NIGHTLY_WAREHOUSE` | pipeline | Microsoft Fabric | data_factory | 124 | 19 | 88 | 0 | R1-R5 | Only surviving platform — R2 ruled out Databricks on Azure and Snowflake on Azure |
+| `PL_INGEST_PARTNERS` | pipeline | Microsoft Fabric | data_factory | 176 | 27 | 125 | 0 | R7 | Absorbed by the F32 capacity already paid for — marginal cost €0 against €27/month on Databricks on Azure, the cheapest meter that survived. Free headroom is the cheapest compute in the estate, and the only way to use it is to put something on it |
+| `PL_HR_EXTRACT` | pipeline | Microsoft Fabric | data_factory | 28 | 4 | 20 | 0 | R1-R5 | Only surviving platform — R1 ruled out Databricks on Azure and Snowflake on Azure |
+| `STR_DEVICE_TELEMETRY` | stream | Microsoft Fabric | eventhouse | 2,663 | 670 | 3,140 | 0 | R1-R5 | Only surviving platform — R4 ruled out Databricks on Azure and Snowflake on Azure |
+| `STR_CLICKSTREAM` | stream | Microsoft Fabric | eventhouse | 1,546 | 377 | 1,840 | 0 | R1-R5 | Only surviving platform — R4 ruled out Databricks on Azure and Snowflake on Azure |
+| `STR_PAYMENTS` | stream | stays on Synapse | synapse | 719 | 172 | 886 | 0 | R1-R5 | Every candidate was eliminated by a constraint. The honest answer is that this workload does not have a target yet — change a constraint or accept that it stays where it is. A plan that quietly assigns it anyway is a plan that fails in year two |
+| `STR_INVENTORY_MOVE` | stream | Databricks on Azure | structured_streaming | 852 | 205 | 1,038 | 205 | R1-R5 | Only surviving platform — R3 ruled out Microsoft Fabric and Snowflake on Azure |
 
-A Fabric workload showing **€0** is not free. It is riding capacity the estate already pays for, and the capacity is billed once in the table above. That is the whole difference between a pre-paid capacity and a meter, and it is why these two columns cannot be added up per row.
+The two meter columns are what each workload would cost on that platform **standing alone**, and they are true in that form — that is what a meter is. The `CU-h/mo` column is not a price and cannot be turned into one: it is demand against a shared pool, and the pool is billed once, in the table above. A Fabric workload showing **€0** is not free, it is riding capacity the estate already pays for. That asymmetry between the columns is the whole reason this repo exists, and it is why these rows cannot be added up sideways.
 
 ## What was ruled out, and by what
 
 Constraints eliminate; economics chooses. Everything in this section happened before any price was compared.
 
 **`FCT_GL_POSTING`** — General ledger postings fact
-- Databricks: [R2] the workload is written as T-SQL transactions; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Databricks on Azure: [R2] the workload is written as T-SQL transactions; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Snowflake on Azure: [R2] the workload is written as T-SQL transactions; Snowflake on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
 
 **`DIM_ACCOUNT`** — Chart of accounts dimension
-- Databricks: [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Databricks on Azure: [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Snowflake on Azure: [R2] the workload is written as T-SQL procedures; Snowflake on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
 
 **`FCT_SALES_ORDER`** — Sales order fact
-- Databricks: [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Databricks on Azure: [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Snowflake on Azure: [R2] the workload is written as T-SQL procedures; Snowflake on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
 
 **`DIM_CUSTOMER`** — Customer dimension (SCD2)
-- Databricks: [R2] the workload is written as T-SQL transactions; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Databricks on Azure: [R2] the workload is written as T-SQL transactions; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Snowflake on Azure: [R2] the workload is written as T-SQL transactions; Snowflake on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
 
 **`VW_HR_HEADCOUNT`** — Serverless view over HR extracts
-- Databricks: [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change
+- Databricks on Azure: [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change
+- Snowflake on Azure: [R1] restricted classification: the estate has cleared fabric for this data and not Snowflake on Azure. Clearing a second platform is a governance project, not a configuration change
 
 **`NB_DEMAND_FORECAST`** — Demand forecast training and scoring
-- Fabric: [R5] experiment tracking, a model registry and a served endpoint; Microsoft Fabric has the pieces but not the lifecycle this estate needs
+- Microsoft Fabric: [R5] experiment tracking, a model registry and a served endpoint; Microsoft Fabric has the pieces but not the lifecycle this estate needs
+- Snowflake on Azure: [R5] experiment tracking, a model registry and a served endpoint; Snowflake on Azure has the pieces but not the lifecycle this estate needs
 
 **`PL_NIGHTLY_WAREHOUSE`** — Nightly warehouse orchestration
-- Databricks: [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Databricks on Azure: [R2] the workload is written as T-SQL procedures; Databricks on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
+- Snowflake on Azure: [R2] the workload is written as T-SQL procedures; Snowflake on Azure does not host that surface, so this is a rewrite rather than a migration — priced in the cost model, and deliberately not purchasable here
 
 **`PL_HR_EXTRACT`** — HR extract orchestration
-- Databricks: [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change
+- Databricks on Azure: [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change
+- Snowflake on Azure: [R1] restricted classification: the estate has cleared fabric for this data and not Snowflake on Azure. Clearing a second platform is a governance project, not a configuration change
 
 **`STR_DEVICE_TELEMETRY`** — Device telemetry — operational monitoring
-- Databricks: [R4] sub-second interactive query over high-cardinality telemetry at 40 concurrent; Databricks on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine
+- Databricks on Azure: [R4] sub-second interactive query over high-cardinality telemetry at 40 concurrent; Databricks on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine
+- Snowflake on Azure: [R4] sub-second interactive query over high-cardinality telemetry at 40 concurrent; Snowflake on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine
 
 **`STR_CLICKSTREAM`** — Web clickstream — product analytics
-- Databricks: [R4] sub-second interactive query over high-cardinality telemetry at 25 concurrent; Databricks on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine
+- Databricks on Azure: [R4] sub-second interactive query over high-cardinality telemetry at 25 concurrent; Databricks on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine
+- Snowflake on Azure: [R4] sub-second interactive query over high-cardinality telemetry at 25 concurrent; Snowflake on Azure can be made to do it with enough warm compute, which is a way of saying it is the wrong engine
 
 **`STR_PAYMENTS`** — Payment events — settlement ledger
-- Fabric: [R3] events arrive up to 120 min late and the window has to be restated by event time; Microsoft Fabric aggregates by ingestion time and does not go back
-- Databricks: [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change
+- Microsoft Fabric: [R3] events arrive up to 120 min late and the window has to be restated by event time; Microsoft Fabric aggregates by ingestion time and does not go back
+- Databricks on Azure: [R1] restricted classification: the estate has cleared fabric for this data and not Databricks on Azure. Clearing a second platform is a governance project, not a configuration change
+- Snowflake on Azure: [R1] restricted classification: the estate has cleared fabric for this data and not Snowflake on Azure. Clearing a second platform is a governance project, not a configuration change
 
 **`STR_INVENTORY_MOVE`** — Warehouse stock movements
-- Fabric: [R3] events arrive up to 45 min late and the window has to be restated by event time; Microsoft Fabric aggregates by ingestion time and does not go back
+- Microsoft Fabric: [R3] events arrive up to 45 min late and the window has to be restated by event time; Microsoft Fabric aggregates by ingestion time and does not go back
+- Snowflake on Azure: [R3] events arrive up to 45 min late and the window has to be restated by event time; Snowflake on Azure aggregates by ingestion time and does not go back

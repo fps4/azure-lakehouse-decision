@@ -223,9 +223,15 @@ def run(reports_dir: Path | None = None, data_dir: Path | None = None) -> Path:
     out.append(
         "- Throughput, latency, cost per query, cluster or capacity sizing. Not "
         "measured, not inferable.\n"
-        "- Fabric Eventhouse and Databricks Structured Streaming are not in this "
-        "process. Their real behaviour under load, their operational surface and their "
-        "actual guarantees must be checked against current vendor documentation.\n"
+        "- Fabric Eventhouse, Databricks Structured Streaming and Snowpipe Streaming "
+        "are none of them in this process. Their real behaviour under load, their "
+        "operational surface and their actual guarantees must be checked against "
+        "current vendor documentation.\n"
+        "- What is executed here are two *semantics*, not three products: an "
+        "ingestion-time append-only engine against an event-time restating one. Two "
+        "of the three candidate platforms fall on the first side of that line, for "
+        "quite different product reasons, and this simulation cannot tell those "
+        "reasons apart — nor does the workload care.\n"
         "- The Delta table written above is `deltalake` on a laptop, not Databricks. "
         "The format is real; the runtime is not.\n"
     )

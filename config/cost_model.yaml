@@ -10,11 +10,20 @@
 #   Fabric      a pre-paid capacity. One bill for the whole estate. The marginal
 #               cost of one more workload is zero — until the capacity saturates,
 #               and then it is the price of the next F-SKU. A step function.
-#   Databricks  metered. Near-zero fixed cost, and a straight line in consumption.
+#   Databricks  metered, per DBU. Near-zero fixed cost, a straight line in
+#               consumption.
+#   Snowflake   metered, per credit. The same shape as Databricks, a different
+#               slope on each surface — and that difference is the only reason
+#               having both in the comparison is worth anything.
 #
 # A step function against a straight line is a different argument from two straight
-# lines, and it is the reason a workload's platform depends on what else is on the
-# platform (ADR-0003).
+# lines (ADR-0003). Two straight lines with different slopes is a third argument
+# again, and it is the one that decides between the two metered platforms.
+#
+# One cost in this file is neither: `platform_overhead_eur_per_month` attaches to a
+# platform *being operated at all*. It is not divisible by workload, which makes it
+# non-additive in exactly the way a capacity rung is — the reason R9 exists
+# (ADR-0007).
 
 currency: EUR
 hours_per_month: 730.0
@@ -56,36 +65,88 @@ fabric:
   # that surprises people on the invoice.
   eventhouse_hot_cache_eur_per_gb_month: 0.11
 
-databricks:
-  # Effective €/DBU-hour including the Azure VM underneath, except where the SKU is
-  # serverless and the compute is inside the DBU rate.
-  eur_per_dbu:
-    sql_warehouse: 0.62
-    jobs_compute: 0.26
-    workflows: 0.26
-    structured_streaming: 0.31
-  dbu_hours_per_compute_hour:
-    sql_warehouse: 6.0
-    jobs_compute: 5.0
-    workflows: 1.2
-    structured_streaming: 0.6
-  dbu_hours_per_tb_scanned:
-    sql_warehouse: 1.6
-    jobs_compute: 1.2
-    workflows: 0.0
-    structured_streaming: 0.15
-  dbu_hours_per_billion_events:
-    structured_streaming: 40.0
+# Every metered platform is described the same way, because they are the same shape:
+# a billing unit, a price per unit that may vary by surface, and the conversion from
+# a physical driver to units. Adding a fourth metered platform is an entry here and
+# nothing in Python (ADR-0005, ADR-0007).
+metered:
 
-  # ADLS Gen2, hot tier.
-  storage_eur_per_gb_month: 0.018
+  databricks:
+    unit: DBU-h
+    # Effective €/DBU-hour including the Azure VM underneath, except where the SKU is
+    # serverless and the compute is inside the DBU rate.
+    eur_per_unit:
+      sql_warehouse: 0.62
+      jobs_compute: 0.26
+      workflows: 0.26
+      structured_streaming: 0.31
+    units_per_compute_hour:
+      sql_warehouse: 6.0
+      jobs_compute: 5.0
+      workflows: 1.2
+      structured_streaming: 0.6
+    units_per_tb_scanned:
+      sql_warehouse: 1.6
+      jobs_compute: 1.2
+      workflows: 0.0
+      structured_streaming: 0.15
+    units_per_billion_events:
+      structured_streaming: 40.0
 
-# Costs that attach to a *platform being used at all*, not to any one workload.
-# Two platforms means two of these, which is the number the "just use both" answer
-# usually forgets.
+    # ADLS Gen2, hot tier.
+    storage_eur_per_gb_month: 0.018
+
+  snowflake:
+    unit: credit
+    # One credit price across the account — Snowflake charges by credit and edition,
+    # not by surface, so the surface differentiation lives entirely in the conversion
+    # factors below. That is a real difference in how the two meters are shaped, and
+    # flattening it away would hide it.
+    eur_per_unit:
+      virtual_warehouse: 2.85
+      snowpark: 2.85
+      tasks_streams: 2.85
+      snowpipe_streaming: 2.85
+    units_per_compute_hour:
+      # A virtual warehouse bills per second while it is running and auto-suspends
+      # when it is not, so a BI-shaped hour of *query* costs less than an hour of
+      # warehouse uptime would suggest. This factor is that, not a warehouse size.
+      # It is where Snowflake is genuinely strong against both alternatives, and the
+      # reason it is in the comparison at all: €2.85/compute-hour here against
+      # €3.72 for a Databricks SQL warehouse in the numbers above.
+      virtual_warehouse: 1.0
+      # Snowpark for a Spark-shaped transformation is the expensive end of this
+      # platform, and it is why the notebooks in this estate do not land here.
+      snowpark: 2.6
+      tasks_streams: 0.5
+      snowpipe_streaming: 0.35
+    units_per_tb_scanned:
+      # Near parity with Databricks SQL on scan — €1.08/TB here against €0.99 — which
+      # is the most defensible reading of the published comparisons: the two engines
+      # trade places depending on the query shape and on who commissioned the
+      # benchmark. Anything claiming a large gap in either direction is selling
+      # something. Replace with a measurement on your own queries before it decides
+      # anything; nothing in this repo measures either engine (ADR-0001).
+      virtual_warehouse: 0.38
+      snowpark: 0.5
+      tasks_streams: 0.0
+      snowpipe_streaming: 0.06
+    units_per_billion_events:
+      snowpipe_streaming: 22.0
+
+    # Snowflake-managed storage, compressed, billed on the flat monthly rate.
+    storage_eur_per_gb_month: 0.023
+
+# Costs that attach to a *platform being operated at all*, not to any one workload:
+# the contract, the landing zone, the identity integration, the network path, the
+# people who know it. Three platforms means three of these, which is the number the
+# "just use whichever is cheapest per workload" answer forgets — and the reason a
+# platform that wins a handful of workloads on the meter can still lose the estate
+# (R9, ADR-0007).
 platform_overhead_eur_per_month:
   fabric: 900.0
   databricks: 1400.0
+  snowflake: 1200.0
 
 # What it costs to move one workload off Synapse, amortised across the programme so
 # it can sit in the same monthly number as everything else. A T-SQL surface that has
